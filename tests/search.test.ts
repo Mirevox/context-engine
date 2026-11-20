@@ -85,7 +85,7 @@ describe("file filtering", () => {
   it("skips secrets, lockfiles, binaries, oversized and vendored files", () => {
     const big = "x".repeat(250_000);
     const dir = makeRepo(root, "filt", {
-      "ok.ts": "export const ok = CANARY_VISIBLE;\n",
+      "ok.ts": "export const ok = 1;\n",
       ".env": "API_KEY=CANARY_SECRET_VALUE\n",
       "deploy.key": "CANARY_SECRET_VALUE\n",
       "node_modules/pkg/index.js": "module.exports = 1;\n",

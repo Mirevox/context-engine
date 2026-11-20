@@ -58,13 +58,13 @@
 | **DB** | `src/db.ts` | Opens `DatabaseSync` (`node:sqlite`), applies concurrency pragmas (`WAL`, `busy_timeout = 5000`, `synchronous = NORMAL`), runs idempotent DDL schema creation, and exports `inTransaction()` using `BEGIN IMMEDIATE`. |
 | **Git** | `src/git.ts` | Read-only local Git wrapper via `execFileSync("git", ["-C", cwd, ...])`: `repoRoot`, `headSha`, `listTree` (`ls-tree -r -l -z`), batched `readBlobs` (`cat-file --batch`), and single-file `readFileAt` (`git show <sha>:<path>`). |
 | **Registry** | `src/registry.ts` | Manages registered local repos in `repos` table. Generates deterministic 12-char SHA-1 IDs from `realpath(repoRoot)`, enforces unique display names, resolves references by `id`, `name`, or filesystem `path`, and updates `last_indexed_commit` / `file_count`. |
-| **Summarizer** | `src/summarizer.ts` | Pure, deterministic extractive analyzer (no LLM, no I/O). Provides `languageOf`, `shouldIndex`, `looksBinary`, `extractSymbols`, `leadingDoc`, `splitIdentifier`, `tokenize`, `summarizeFile` (420-char cap), and `summarizeRepo` (language histogram, directory layout, ranked `topPaths`, compact `overview`). |
+| **Summarizer** | `src/summarizer.ts` | Pure, deterministic extractive analyzer (no LLM, no I/O). Provides `languageOf`, `isSecretPath`, `shouldIndex`, `looksBinary`, `extractSymbols`, `leadingDoc`, `splitIdentifier`, `tokenize`, `summarizeFile` (420-char cap), and `summarizeRepo` (language histogram, directory layout, ranked `topPaths`, compact `overview`). |
 | **Cache** | `src/cache.ts` | CRUD and retention layer over `files`, `repo_summaries`, and `counters` tables. Tags all reads/writes with `SUMMARIZER_VERSION = 1`. Supports exact `(repo_id, commit_sha, path)` lookup, cross-commit `(repo_id, path, blob_sha)` lookup (`findByBlob`), commit pruning (`prune`), and dual persisted + per-process session counters. |
 | **Indexer** | `src/indexer.ts` | Orchestrates indexing a repo at `HEAD`: enumerates tree, filters/caps entries, reuses unchanged files via `peekFile` / `findByBlob`, reads remaining blobs in batches of `300`, skips NUL-containing binaries, writes file summaries + repo overview, prunes old commits, and updates counters. |
-| **Engine** | `src/engine.ts` | Transport-agnostic `ContextEngine` facade implementing `registerRepo`, `unregisterRepo`, `listRepos`, `ensureFresh`, `reindexRepo`, `repoSummary`, weighted keyword `search`, `fileContext` (with on-demand Git fallback + optional truncated content), and `stats`. |
-| **MCP** | `src/mcp.ts` | Wraps `ContextEngine` in `@modelcontextprotocol/sdk` `McpServer` over `StdioServerTransport` with Zod schemas and JSON text responses (`isError: true` on thrown errors). *(See Section 6 for tool inventory and `register_repo` delta.)* |
-| **HTTP** | `src/http.ts` | Zero-framework `node:http` JSON server with 1 MB body cap, optional `CONTEXT_ENGINE_TOKEN` Bearer auth (exempting `GET /health`), 9 REST-style endpoints, and deterministic HTTP error status mapping (`400`, `401`, `404`, `413`, `500`). |
-| **CLI** | `src/cli.ts` | Commander-based `context-engine` binary exposing `register`, `unregister`, `index`, `status`, `query`, `serve-mcp`, and `serve-http` with `--data-dir` and `--json`, plus graceful `SIGINT`/`SIGTERM` shutdown. |
+| **Engine** | `src/engine.ts` | Transport-agnostic `ContextEngine` facade implementing `registerRepo`, `unregisterRepo`, `listRepos`, `ensureFresh`, `reindexRepo`, `repoSummary`, weighted keyword `search`, `fileContext` (blocking secret-shaped paths, with on-demand Git fallback + optional truncated content), and `stats`. |
+| **MCP** | `src/mcp.ts` | Wraps `ContextEngine` in `@modelcontextprotocol/sdk` `McpServer` over `StdioServerTransport` with Zod schemas, all 7 v1 tools, and JSON text responses (`isError: true` on thrown errors). |
+| **HTTP** | `src/http.ts` | Zero-framework `node:http` JSON server with `assertSafeBind()` fail-closed guard for non-loopback binds without `CONTEXT_ENGINE_TOKEN`, 1 MB body cap, optional Bearer auth (exempting `GET /health`), 9 REST-style endpoints, and deterministic HTTP error status mapping (`400`, `401`, `404`, `413`, `500`). |
+| **CLI** | `src/cli.ts` | Commander-based `context-engine` binary exposing `register`, `unregister`, `index`, `status`, `query`, `serve-mcp`, and `serve-http` with `-d, --data-dir` and `--json`, `assertSafeBind` enforcement, and graceful `SIGINT`/`SIGTERM` shutdown. |
 | **Library Index** | `src/index.ts` | Re-exports public classes, helper functions, server factories, and types for programmatic embedding. |
 
 ---
@@ -163,8 +163,7 @@ Multiple clients (e.g., two IDE MCP stdio processes + a CLI session + an HTTP se
 ## 6. Interface Surface & Shipped Implementation Notes
 
 ### MCP Tools (`src/mcp.ts`)
-- **Implemented in `src/mcp.ts` (6 tools):** `list_repos`, `get_repo_summary`, `search_context`, `get_file_context`, `cache_stats`, `reindex_repo`.
-- **Specified v1 tool pending registration in `src/mcp.ts`:** `register_repo` (already implemented on `ContextEngine.registerRepo`, CLI `register`, and HTTP `POST /repos`; flagged in `docs/acceptance.md` for validation/fix).
+- **Implemented (all 7 v1 tools):** `list_repos`, `register_repo`, `get_repo_summary`, `search_context`, `get_file_context`, `cache_stats`, `reindex_repo`.
 
 ### HTTP Endpoints (`src/http.ts`)
 - `GET /health`
@@ -175,6 +174,7 @@ Multiple clients (e.g., two IDE MCP stdio processes + a CLI session + an HTTP se
 - `GET /stats`
 
 ### CLI Subcommands (`src/cli.ts`)
+- Global flags: `-d, --data-dir <dir>`, `--json`, `--version`
 - `register <path> [-n|--name] [--no-index]`
 - `unregister <repo>`
 - `index [repo] [-f|--force]`

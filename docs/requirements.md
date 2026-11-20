@@ -139,7 +139,7 @@ The system MUST expose an HTTP JSON API (`createHttpServer` / `serve-http`) defa
   2. With `CONTEXT_ENGINE_TOKEN=secret`, `GET /health` returns `200`, unauthenticated `GET /stats` returns `401`, and `Authorization: Bearer secret` returns `200`.
 
 ### `FR-11` — CLI Interface
-The system MUST provide a `context-engine` CLI (`dist/cli.js`) supporting `--data-dir <dir>` (and documented alias if advertised in README) and `--json` global options.
+The system MUST provide a `context-engine` CLI (`dist/cli.js`) supporting `-d, --data-dir <dir>` and `--json` global options.
 - **Required Commands**: `register <path> [-n|--name] [--no-index]`, `unregister <repo>`, `index [repo] [-f|--force]`, `status`, `query <text> [-r|--repo] [-l|--limit]`, `serve-mcp`, `serve-http [-p|--port] [--host]`.
 - **Acceptance Criteria**:
   1. Every command returns exit code `0` on success and `1` with `error: ...` on stderr for invalid inputs.
@@ -150,11 +150,12 @@ The system MUST execute Git commands safely and prevent unintended exposure of s
 - **Rules**:
   - All Git invocations MUST use `execFileSync("git", ["-C", cwd, ...])` with argument arrays (never shell string interpolation).
   - Default operation makes zero outbound network connections and sends no telemetry.
-  - HTTP server binds to `127.0.0.1` by default.
-  - **Council security guardrail (hardening target)**: Secret-shaped filenames (`.env`, `.env.*`, `*.pem`, `*.key`, `*secret*`, `*credential*`, `id_rsa`) MUST be excluded from indexing so secret values never enter `cache.sqlite`, and binding HTTP to a non-loopback host without `CONTEXT_ENGINE_TOKEN` MUST fail closed.
+  - HTTP server binds to `127.0.0.1` by default, and `assertSafeBind()` MUST refuse non-loopback hosts unless `CONTEXT_ENGINE_TOKEN` is set.
+  - Secret-shaped filenames (`isSecretPath()`: `.env`, `.env.*`, `id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*secret*`, `*credential*`) MUST be excluded from indexing AND refused by `fileContext()` so secret contents never enter `cache.sqlite` or tool outputs.
 - **Acceptance Criteria**:
   1. Static audit confirms zero `exec`/`execSync` shell calls and zero outbound HTTP/fetch calls in `src/`.
-  2. Fixture canary secret in `.env` or `*.key` produces zero matches in `cache.sqlite` and tool outputs (verified in `docs/acceptance.md`).
+  2. Fixture canary secret in `.env` or `*.key` produces zero matches in `cache.sqlite` and is refused by `get_file_context`.
+  3. Invoking `serve-http --host 0.0.0.0` without `CONTEXT_ENGINE_TOKEN` exits non-zero.
 
 ---
 
