@@ -1,0 +1,6 @@
+{
+  "name": "sample-repo",
+  "version": "1.0.0",
+  "description": "Tiny demo service with auth and billing helpers",
+  "main": "src/index.ts"
+}
