@@ -112,6 +112,9 @@ export class ContextEngine {
   search(query: string, opts: { repo?: string; limit?: number } = {}): SearchHit[] {
     const terms = tokenize(query);
     if (terms.length === 0) return [];
+    if (opts.limit !== undefined && !Number.isFinite(opts.limit)) {
+      throw new Error(`Invalid limit: ${String(opts.limit)}`);
+    }
     const limit = Math.max(1, Math.min(opts.limit ?? 10, 100));
     const repos = opts.repo ? [this.registry.resolve(opts.repo)] : this.registry.list();
     const phrase = query.trim().toLowerCase();

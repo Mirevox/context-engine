@@ -120,7 +120,9 @@ program
   .option("-l, --limit <n>", "max results", "10")
   .action(
     action((e, text: string, o: { repo?: string; limit: string }) => {
-      const hits = e.search(text, { repo: o.repo, limit: Number(o.limit) });
+      const limit = Number(o.limit);
+      if (!Number.isFinite(limit)) throw new Error(`Invalid limit: ${o.limit}`);
+      const hits = e.search(text, { repo: o.repo, limit });
       out(hits, () =>
         hits.length === 0
           ? "no matches"

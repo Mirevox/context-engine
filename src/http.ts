@@ -94,7 +94,12 @@ export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}):
         }
       }
       if (method === "GET" && parts[0] === "search" && parts.length === 1) {
-        const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
+        const rawLimit = q.get("limit");
+        let limit: number | undefined;
+        if (rawLimit) {
+          limit = Number(rawLimit);
+          if (!Number.isFinite(limit)) throw new HttpError(400, `Invalid limit: ${rawLimit}`);
+        }
         return send(res, 200, engine.search(need(q.get("q"), "q"), { repo: q.get("repo") ?? undefined, limit }));
       }
       if (method === "GET" && parts[0] === "file" && parts.length === 1) {

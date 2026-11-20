@@ -50,6 +50,7 @@ export class Registry {
     const existing = this.db.prepare("SELECT * FROM repos WHERE id = ?").get(id) as RepoRow | undefined;
     const finalName = name ?? existing?.name ?? this.uniqueName(basename(root));
     if (existing) {
+      if (finalName !== existing.name) this.assertNameFree(finalName);
       this.db.prepare("UPDATE repos SET name = ? WHERE id = ?").run(finalName, id);
     } else {
       this.assertNameFree(finalName);
@@ -86,8 +87,11 @@ export class Registry {
   resolve(ref: string): RegisteredRepo {
     const byId = this.get(ref);
     if (byId) return byId;
-    const byName = this.db.prepare("SELECT * FROM repos WHERE name = ?").get(ref) as RepoRow | undefined;
-    if (byName) return toRepo(byName);
+    const byName = this.db.prepare("SELECT * FROM repos WHERE name = ?").all(ref) as unknown as RepoRow[];
+    if (byName.length > 1) {
+      throw new Error(`Ambiguous repo name "${ref}" matches ${byName.length} repos; pass an id or path`);
+    }
+    if (byName.length === 1) return toRepo(byName[0]!);
     const abs = resolve(ref);
     const candidates = [abs];
     try {

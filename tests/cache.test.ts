@@ -31,6 +31,17 @@ describe("cache keying (repoId, commitSha, path)", () => {
     expect(c.fileMisses).toBeGreaterThanOrEqual(3);
   });
 
+  it("rejects an explicit rename onto another repo's name", () => {
+    const d1 = makeRepo(root, "one", { "a.ts": "export const a = 1;\n" });
+    const d2 = makeRepo(root, "two", { "b.ts": "export const b = 1;\n" });
+    engine.registerRepo(d1, { name: "alpha" });
+    engine.registerRepo(d2, { name: "beta" });
+    expect(() => engine.registerRepo(d2, { name: "alpha" })).toThrow(/already registered/);
+    expect(engine.registry.resolve("beta").name).toBe("beta");
+    expect(engine.registerRepo(d1, { name: "alpha" }).repo.name).toBe("alpha");
+    expect(engine.registerRepo(d2, { name: "gamma" }).repo.name).toBe("gamma");
+  });
+
   it("keeps independent rows for the same path in different repos", () => {
     const d1 = makeRepo(root, "one", { "x.ts": "export function one() {}\n" });
     const d2 = makeRepo(root, "two", { "x.ts": "export function two() {}\n" });

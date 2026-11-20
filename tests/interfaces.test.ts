@@ -85,6 +85,7 @@ describe("HTTP", () => {
       expect(stats.files).toBeGreaterThan(0);
       expect((await fetch(`${base}/repos/missing/summary`, { headers: auth })).status).toBe(404);
       expect((await fetch(`${base}/search`, { headers: auth })).status).toBe(400);
+      expect((await fetch(`${base}/search?q=invoice&limit=foo`, { headers: auth })).status).toBe(400);
       expect((await fetch(`${base}/repos/sample`, { method: "DELETE", headers: auth })).status).toBe(200);
     } finally {
       await new Promise((r) => server.close(r));

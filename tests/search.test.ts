@@ -49,6 +49,7 @@ describe("search", () => {
     expect(engine.search("zzzqqq")).toEqual([]);
     expect(engine.search("   ")).toEqual([]);
     expect(engine.search("src", { limit: 2 }).length).toBeLessThanOrEqual(2);
+    expect(() => engine.search("src", { limit: Number.NaN })).toThrow(/Invalid limit/);
   });
 
   it("returns file context with optional content from git", () => {
