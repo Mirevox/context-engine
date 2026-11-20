@@ -91,6 +91,17 @@ describe("HTTP", () => {
       expect((await fetch(`${base}/repos/missing/summary`, { headers: auth })).status).toBe(404);
       expect((await fetch(`${base}/search`, { headers: auth })).status).toBe(400);
       expect((await fetch(`${base}/search?q=invoice&limit=foo`, { headers: auth })).status).toBe(400);
+      expect((await fetch(`${base}/file?repo=sample&path=src/auth.ts&content=1&max_chars=foo`, { headers: auth })).status).toBe(400);
+      expect((await fetch(`${base}/file?repo=sample&path=.env`, { headers: auth })).status).toBe(403);
+      expect(
+        (
+          await fetch(`${base}/repos`, {
+            method: "POST",
+            headers: { ...auth, "content-type": "application/json" },
+            body: "null",
+          })
+        ).status,
+      ).toBe(400);
       expect((await fetch(`${base}/repos/sample`, { method: "DELETE", headers: auth })).status).toBe(200);
     } finally {
       await new Promise((r) => server.close(r));

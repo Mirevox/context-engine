@@ -2,8 +2,9 @@
 
 - **Product**: `@mirevox/context-engine` v0.1.0 (`https://github.com/Mirevox/context-engine`)
 - **License**: Apache-2.0
-- **Runtime**: TypeScript on Node.js `>= 22.5.0` (built-in `node:sqlite`)
+- **Runtime**: TypeScript on Node.js `>= 22.13.0` (built-in `node:sqlite`; `22.5–22.12` needs `--experimental-sqlite` and the published bin cannot pass that flag)
 - **Scope**: Multi-repo local Git registration, commit-SHA-aware SQLite extractive summary cache, shared data directory, and MCP / HTTP / CLI interfaces.
+- **Honesty (v1 bounds)**: Indexes committed `HEAD` only (dirty worktrees invisible / not flagged stale). Secret filtering is basename + common secret directory segments — not content scanning. “Shared” means same host + checkouts + data dir (repo id = SHA-1 of realpath).
 
 ---
 
@@ -18,6 +19,7 @@ The system MUST allow registering, listing, resolving, and unregistering multipl
   - Re-registering an already-registered repo path updates its display name without duplicating the row.
   - Repositories MUST be resolvable by `id`, `name`, or filesystem `path` (normalized via `resolve` / `realpath`).
   - Unregistering removes the repo record and deletes all cached `files` and `repo_summaries` rows for that `repo_id`.
+  - `stale` compares indexed commit vs Git `HEAD` only — dirty working-tree edits do **not** set `stale`.
 - **Acceptance Criteria**:
   1. Registering two distinct local Git repos succeeds and assigns distinct 12-char IDs and unique names; `listRepos()` returns both sorted by `name` with live `headCommit` and boolean `stale`.
   2. Registering a non-directory or non-Git directory fails cleanly with an actionable error.
@@ -151,10 +153,10 @@ The system MUST execute Git commands safely and prevent unintended exposure of s
   - All Git invocations MUST use `execFileSync("git", ["-C", cwd, ...])` with argument arrays (never shell string interpolation).
   - Default operation makes zero outbound network connections and sends no telemetry.
   - HTTP server binds to `127.0.0.1` by default, and `assertSafeBind()` MUST refuse non-loopback hosts unless `CONTEXT_ENGINE_TOKEN` is set.
-  - Secret-shaped filenames (`isSecretPath()`: `.env`, `.env.*`, `id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*secret*`, `*credential*`) MUST be excluded from indexing AND refused by `fileContext()` so secret contents never enter `cache.sqlite` or tool outputs.
+  - Secret-shaped paths (`isSecretPath()`): basename patterns (`.env`, `.env.*`, `id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*secret*`, `*credential*`) **and** path segments under `.ssh/`, `secret(s)/`, or `credential(s)/` MUST be excluded from indexing AND refused by `fileContext()`. This is best-effort path filtering — **not** content/entropy scanning; names like `.npmrc` / `kubeconfig` outside those dirs are not blocked.
 - **Acceptance Criteria**:
   1. Static audit confirms zero `exec`/`execSync` shell calls and zero outbound HTTP/fetch calls in `src/`.
-  2. Fixture canary secret in `.env` or `*.key` produces zero matches in `cache.sqlite` and is refused by `get_file_context`.
+  2. Fixture canary secret in `.env`, `*.key`, or `secrets/notes.txt` produces zero matches in `cache.sqlite` and is refused by `get_file_context`.
   3. Invoking `serve-http --host 0.0.0.0` without `CONTEXT_ENGINE_TOKEN` exits non-zero.
 
 ---
@@ -163,9 +165,9 @@ The system MUST execute Git commands safely and prevent unintended exposure of s
 
 | ID | Category | Requirement | Measurable Acceptance Criterion |
 |---|---|---|---|
-| `NFR-01` | **Zero Native Build / Runtime** | Run on Node.js `>= 22.5.0` using built-in `node:sqlite`, `node:http`, `node:crypto`, and `node:child_process` with minimal runtime dependencies (`@modelcontextprotocol/sdk`, `commander`, `zod`). | `npm install && npm run build` succeeds on Linux without `node-gyp` or C++ toolchain; `tsc --noEmit` exits `0`. |
+| `NFR-01` | **Zero Native Build / Runtime** | Run on Node.js `>= 22.13.0` using built-in `node:sqlite`, `node:http`, `node:crypto`, and `node:child_process` with minimal runtime dependencies (`@modelcontextprotocol/sdk`, `commander`, `zod`). Node may still emit `ExperimentalWarning` for `node:sqlite`. | `npm install && npm run build` succeeds on Linux without `node-gyp` or C++ toolchain; `tsc --noEmit` exits `0`. |
 | `NFR-02` | **Determinism & Offline Operation** | Indexing, summarization, and search MUST be deterministic and function 100% offline. | Two clean runs on the fixture repo with no network access produce identical summaries, symbols, and search rankings. |
-| `NFR-03` | **Multi-Process Concurrency & Durability** | Shared SQLite cache MUST survive concurrent reads/writes from multiple local clients and persist across process restarts. | WAL mode + `busy_timeout = 5000` + `BEGIN IMMEDIATE` enabled on every `openDb()`; data persists after closing and reopening `ContextEngine`. |
+| `NFR-03` | **Multi-Process Concurrency & Durability** | Shared SQLite cache MUST survive concurrent reads/writes from multiple local clients and persist across process restarts. | WAL mode + `busy_timeout = 5000` on every `openDb()`; batch file inserts/pruning use `BEGIN IMMEDIATE`. Some single-statement repo/counter updates and forced-reindex deletes still run outside a combined transaction; multi-process concurrency is not yet stress-tested in CI. Data persists after closing and reopening `ContextEngine`. |
 | `NFR-04` | **Local Performance** | Indexing and querying typical repositories MUST remain fast enough for interactive agent tool calls. | Fixture repo cold index completes in `< 500 ms`; warm `repoSummary` / `search` / `fileContext` completes in `< 50 ms`; blob reads are batched (`BATCH = 300` via `git cat-file --batch`). |
 | `NFR-05` | **Payload Compactness** | Returned summaries MUST stay compact to reduce agent context bloat. | Per-file summary is capped at `<= 420` chars; `get_repo_summary` response byte size is strictly smaller than total tracked source bytes on non-trivial repos. |
 | `NFR-06` | **Modularity & Composability** | Core engine (`src/engine.ts`) MUST remain decoupled from transport layers (`mcp.ts`, `http.ts`, `cli.ts`) and have zero runtime dependency on other Mirevox modules. | Library consumers can import `ContextEngine` from `dist/index.js` without starting MCP or HTTP servers. |

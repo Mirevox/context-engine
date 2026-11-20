@@ -4,5 +4,5 @@ export { Registry } from "./registry.js";
 export { Indexer } from "./indexer.js";
 export { summarizeFile, summarizeRepo, tokenize } from "./summarizer.js";
 export { createMcpServer, serveMcpStdio } from "./mcp.js";
-export { createHttpServer } from "./http.js";
+export { assertSafeBind, createHttpServer } from "./http.js";
 export * from "./types.js";

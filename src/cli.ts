@@ -155,6 +155,11 @@ program
       const server = createHttpServer(e);
       const port = Number(o.port);
       if (!Number.isFinite(port) || port <= 0) throw new Error(`Invalid port: ${o.port}`);
+      server.on("error", (err) => {
+        console.error(`error: ${(err as Error).message}`);
+        e.close();
+        process.exit(1);
+      });
       server.listen(port, o.host, () => {
         console.error(`context-engine HTTP listening on http://${o.host}:${port} (data: ${e.config.dataDir})`);
       });

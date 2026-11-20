@@ -1,31 +1,27 @@
-# Problem statement — Mirevox `context-engine`
+# Mirevox `context-engine` — Problem Statement
 
-## The problem
+## The Problem
 
-Developers and coding agents that work across many local Git repositories repeatedly pay the same orientation cost: walking trees, opening READMEs, and scanning files to answer structural questions ("which repo owns billing?", "what lives in `src/auth.ts`?"). That work is discarded when a session ends, invisible to other harnesses on the same machine, and often rebuilt with LLM/embedding calls that cost tokens and send private source off-box. Timestamp-based caches also drift from `HEAD`, so agents navigate stale paths without knowing the index is wrong.
+When a developer or coding agent works across multiple local Git repositories on the same machine, every new session and every separate tool (IDE chat, CLI agent, local script) starts blind. Each client walks the same directory trees, opens the same READMEs, manifests, and source files, and reconstructs the same structural map ("which repo defines `calculateInvoice`?", "what is the layout of `billing`?", "what symbols are exported from `src/auth.ts`?") from scratch.
 
-## Who feels it
+Existing ways to handle this break down in three practical ways:
 
-- Multi-repo developers running Cursor, Claude Code, VS Code agents, and CLI tools against the same clones
-- Small teams / home-lab operators who cannot justify Sourcegraph-scale shared search but still re-burn context every session
-- Automation that wants compact repo overviews without standing up a vector database
+1. **No reuse across local processes or harnesses.** Whatever structural map one agent session builds disappears when that session closes and cannot be read by another MCP client, CLI command, or local HTTP caller on the same host.
+2. **Heavyweight indexing defaults.** Many code-context tools require LLM API keys, embedding models, vector databases, or outbound network access just to produce an initial index—adding token cost, external dependencies, and non-deterministic prose before a single lookup runs.
+3. **Silent staleness as `HEAD` moves.** Static repo dumps and mtime-based caches drift out of sync as soon as a commit lands, without surfacing which commit SHA the summary actually came from.
 
-## What we ship (v1)
+## What `context-engine` Solves (v1)
 
-A **local-first, harness-neutral context cache**:
+`@mirevox/context-engine` is a local, offline, deterministic structural cache for Git repositories already checked out on disk.
 
-1. Register existing local Git repos (must have a commit).
-2. Build **deterministic extractive** file/repo summaries with **no LLM, no embeddings, no network**.
-3. Persist them in SQLite keyed by `(repoId, commitSha, path)` with blob-SHA reuse when `HEAD` moves.
-4. Serve one shared data directory over **MCP (stdio)**, **HTTP JSON**, and **CLI** (Docker Compose stands up the HTTP path).
+- **Index once per commit, zero LLM required.** Given explicitly registered local Git checkouts (with at least one commit), the engine walks `git ls-tree HEAD` and generates bounded extractive summaries in pure TypeScript: detected language, line count, leading doc comment or README paragraph, regex-extracted top-level symbols/headings, split-identifier keywords (file summary capped at 420 characters), plus a repo overview (language counts, top-level directories, and ranked key paths).
+- **Exact `HEAD` invalidation with blob-level reuse.** Every cached row in SQLite (`cache.sqlite`, built-in `node:sqlite`, WAL mode) is keyed by `(repo_id, commit_sha, path)` and `summarizer_version`. When `HEAD` matches the indexed commit, reads return directly from SQLite without walking Git. When `HEAD` moves, unchanged `(repo_id, path, blob_sha)` files are copied forward without re-reading or re-summarizing their blobs, and only the newest 3 commits per repo are retained.
+- **One shared local cache across interfaces.** CLI commands (`context-engine`), MCP stdio tools (`serve-mcp`), a loopback HTTP JSON API (`127.0.0.1:7437`, optional `CONTEXT_ENGINE_TOKEN`), Docker Compose HTTP standup, and the `ContextEngine` TypeScript library all read and write the same configurable data directory (`--data-dir` / `$MIREVOX_CONTEXT_DIR` / `~/.mirevox/context-engine`), tracking persisted and per-session hit/miss/invalidation counters.
 
-## What we deliberately do not claim
+## Honest Boundaries (What v1 Does Not Solve)
 
-- Not a replacement for Sourcegraph, Copilot repository indexing, or Cursor Instant Grep
-- Not semantic/vector search on the default path
-- Not multi-tenant SaaS or per-repo ACLs (trust boundary = local OS user / bearer token on the published port)
-- Not dirty-worktree indexing — only committed trees at `HEAD`
-
-## Success looks like
-
-A second client on the same host, at the same commit, gets a SQLite cache hit instead of re-walking the tree; a one-file commit invalidates cleanly and re-summarizes only changed blobs; payloads stay compact (≤420 chars per file summary); and the stack runs offline on Node ≥ 22.5 with Apache-2.0 licensing.
+- **Committed `HEAD` trees only.** Uncommitted (dirty) working-tree edits are not indexed, not searchable, and not flagged as stale by `status`.
+- **Orientation, not full code understanding.** Extractive summaries and keyword search help locate repos, files, and symbols quickly across sessions; agents still need to open real source files before editing code, and v1 makes no blanket token-reduction percentage claim.
+- **Single-host trust boundary.** There is no multi-user identity, per-repo ACL, or remote Git cloning. HTTP authentication, when enabled, is a single shared bearer token. Clients must share the same host, checkouts, and data directory (repo id is derived from realpath).
+- **Best-effort secret path filtering.** v1 skips and refuses secret-shaped file basenames (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, SSH key names, `*secret*`, `*credential*`) and common secret directory segments (`.ssh/`, `secret(s)/`, `credential(s)/`), binaries, lockfiles, `node_modules`/`dist`/`build`/`vendor`, and files over 200 KB — but does not scan file contents for secrets and does not catch every sensitive name (e.g. `.npmrc`, `kubeconfig` outside those dirs).
+- **No embeddings or LLM synthesis.** Semantic vector retrieval, AST call graphs, and LLM-generated documentation are intentionally out of scope for v1.

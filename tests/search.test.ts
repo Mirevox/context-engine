@@ -89,15 +89,17 @@ describe("file filtering", () => {
       "ok.ts": "export const ok = 1;\n",
       ".env": "API_KEY=CANARY_SECRET_VALUE\n",
       "deploy.key": "CANARY_SECRET_VALUE\n",
+      "secrets/notes.txt": "CANARY_SECRET_VALUE\n",
       "node_modules/pkg/index.js": "module.exports = 1;\n",
       "package-lock.json": "{}",
       "big.ts": big,
     });
     const { repo, indexed } = engine.registerRepo(dir);
     expect(indexed!.filesIndexed).toBe(1);
-    expect(indexed!.filesSkipped).toBe(5);
+    expect(indexed!.filesSkipped).toBe(6);
     expect(engine.search("CANARY_SECRET_VALUE")).toEqual([]);
     expect(() => engine.fileContext(repo.id, ".env", { includeContent: true })).toThrow(/secret/i);
+    expect(() => engine.fileContext(repo.id, "secrets/notes.txt", { includeContent: true })).toThrow(/secret/i);
     const rows = engine.db.prepare("SELECT COUNT(*) AS n FROM files WHERE summary LIKE '%CANARY_SECRET%' OR keywords LIKE '%canary_secret%'").get() as { n: number };
     expect(rows.n).toBe(0);
   });

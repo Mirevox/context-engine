@@ -38,11 +38,16 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     chunks.push(c as Buffer);
   }
   if (chunks.length === 0) return {};
+  let parsed: unknown;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     throw new HttpError(400, "Invalid JSON body");
   }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new HttpError(400, "Invalid JSON body");
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function need(v: string | null | undefined, name: string): string {
@@ -66,7 +71,12 @@ export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}):
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       const method = req.method ?? "GET";
-      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      let parts: string[];
+      try {
+        parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      } catch {
+        throw new HttpError(400, "Malformed URI encoding");
+      }
       const q = url.searchParams;
 
       if (token && url.pathname !== "/health") {
@@ -120,7 +130,12 @@ export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}):
         return send(res, 200, engine.search(need(q.get("q"), "q"), { repo: q.get("repo") ?? undefined, limit }));
       }
       if (method === "GET" && parts[0] === "file" && parts.length === 1) {
-        const maxChars = q.get("max_chars") ? Number(q.get("max_chars")) : undefined;
+        const rawMax = q.get("max_chars");
+        let maxChars: number | undefined;
+        if (rawMax) {
+          maxChars = Number(rawMax);
+          if (!Number.isFinite(maxChars)) throw new HttpError(400, `Invalid max_chars: ${rawMax}`);
+        }
         return send(
           res,
           200,
@@ -134,9 +149,17 @@ export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}):
       throw new HttpError(404, "Not found");
     } catch (err) {
       if (err instanceof HttpError) return send(res, err.status, { error: err.message });
-      const msg = (err as Error).message ?? String(err);
-      const status = /^Unknown repo|not found/i.test(msg) ? 404 : /Not a (directory|git)|already registered/.test(msg) ? 400 : 500;
-      send(res, status, { error: msg.split("\n")[0] });
+      const msg = ((err as Error).message ?? String(err)).split("\n")[0] ?? "Internal error";
+      const status = /^Unknown repo|not found/i.test(msg)
+        ? 404
+        : /Refusing to read secret/i.test(msg)
+          ? 403
+          : /Ambiguous repo/i.test(msg)
+            ? 409
+            : /Not a (directory|git)|already registered|Invalid |Missing |File not indexed/i.test(msg)
+              ? 400
+              : 500;
+      send(res, status, { error: msg });
     }
   });
 }

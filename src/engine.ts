@@ -4,7 +4,7 @@ import { openDb, type Db } from "./db.js";
 import { headSha, readFileAt } from "./git.js";
 import { Indexer } from "./indexer.js";
 import { Registry } from "./registry.js";
-import { isSecretPath, summarizeFile, tokenize } from "./summarizer.js";
+import { isSecretPath, looksBinary, summarizeFile, tokenize } from "./summarizer.js";
 import type {
   CacheStats,
   FileContext,
@@ -90,9 +90,24 @@ export class ContextEngine {
   }
 
   reindexRepo(ref: string, force = true): IndexResult {
+    if (!force) {
+      const fresh = this.ensureFresh(ref);
+      return (
+        fresh.indexed ?? {
+          repoId: fresh.repo.id,
+          commitSha: fresh.commitSha,
+          filesIndexed: 0,
+          filesReused: 0,
+          filesSkipped: 0,
+          durationMs: 0,
+          reason: "fresh",
+        }
+      );
+    }
     const repo = this.registry.resolve(ref);
-    const result = this.indexer.index(repo, { force });
-    return result;
+    const sha = headSha(repo.path);
+    if (repo.lastIndexedCommit && repo.lastIndexedCommit !== sha) this.cache.bump("invalidations");
+    return this.indexer.index(repo, { force: true });
   }
 
   repoSummary(ref: string): RepoSummary {
@@ -120,7 +135,13 @@ export class ContextEngine {
     const phrase = query.trim().toLowerCase();
     const hits: SearchHit[] = [];
     for (const r of repos) {
-      const fresh = this.ensureFresh(r.id);
+      let fresh: FreshResult;
+      try {
+        fresh = this.ensureFresh(r.id);
+      } catch {
+        // One broken checkout must not abort cross-repo search (listRepos isolates similarly).
+        continue;
+      }
       for (const f of this.cache.listFiles(fresh.repo.id, fresh.commitSha)) {
         const pathL = f.path.toLowerCase();
         const symL = f.symbols.join(" ").toLowerCase();
@@ -156,6 +177,9 @@ export class ContextEngine {
     const fresh = this.ensureFresh(ref);
     const normalized = path.replace(/^\.?\//, "");
     if (isSecretPath(normalized)) throw new Error(`Refusing to read secret-shaped path: ${normalized}`);
+    if (opts.maxChars !== undefined && !Number.isFinite(opts.maxChars)) {
+      throw new Error(`Invalid max_chars: ${String(opts.maxChars)}`);
+    }
     let rec = this.cache.getFile(fresh.repo.id, fresh.commitSha, normalized);
     let cacheHit = !!rec;
     let content: Buffer | null = null;
@@ -163,6 +187,7 @@ export class ContextEngine {
       // Path was not indexed (too large, skipped type, ...) but may exist in the commit.
       content = readFileAt(fresh.repo.path, fresh.commitSha, normalized);
       if (!content) throw new Error(`File not found at ${fresh.commitSha.slice(0, 12)}: ${normalized}`);
+      if (looksBinary(content)) throw new Error(`File not indexed (binary): ${normalized}`);
       const s = summarizeFile(normalized, content.toString("utf8"));
       rec = {
         repoId: fresh.repo.id,
@@ -192,6 +217,7 @@ export class ContextEngine {
     };
     if (opts.includeContent) {
       content ??= readFileAt(fresh.repo.path, fresh.commitSha, normalized);
+      if (content && looksBinary(content)) throw new Error(`File not indexed (binary): ${normalized}`);
       const max = opts.maxChars ?? 8000;
       const text = content?.toString("utf8") ?? "";
       out.content = text.slice(0, max);

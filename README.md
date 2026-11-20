@@ -49,7 +49,8 @@ Stop: `docker compose down` (add `-v` to wipe the cache volume).
 - **Git `safe.directory`:** the image allows any directory for the non-root user so host-UID mounts under `/repos` work; only mount trees you trust.
 - **No multi-tenant ACLs.** Trust boundary is whoever can reach the published port with the bearer token.
 - **Dirty worktrees are invisible** — cache keys are `HEAD` commits only.
-- **Secret denylist is basename-oriented** (e.g. `.env`, `*.key`); nested paths like `secrets/notes.txt` are not blocked by name alone.
+- **Secret filtering is path-based** (basename patterns + `.ssh`/`secret(s)`/`credential(s)` segments) — not content scanning; names like `.npmrc` outside those dirs are not blocked.
+- **Some SQLite write paths are not fully transactional**; concurrent multi-process stress is not yet in CI.
 
 ## Quick start (local Node)
 
@@ -119,8 +120,9 @@ Binds `127.0.0.1` by default. Set `CONTEXT_ENGINE_TOKEN` to require `Authorizati
 - If `HEAD` moved it is a **miss** (counted as an invalidation) and that repo is reindexed. Files whose git blob is unchanged since an earlier commit are copied, not re-summarized.
 - `cache_stats` / `status` report persisted counters (`fileHits`, `fileMisses`, `repoHits`, `repoMisses`, `invalidations`, `reindexes`, `hitRate`) plus per-process `session` counters.
 - Summaries are deterministic and extractive: language, line count, leading doc comment, top-level symbols, keywords. Max 420 chars per file.
-- Skipped: `node_modules`, `dist`, lockfiles, binaries, files over 200 KB, and secret-shaped names (`.env*`, `*.pem`, `*.key`, `*secret*`, `*credential*`, `id_rsa*`).
-- Only the newest 3 indexed commits per repo are kept.
+- Skipped: `node_modules`, `dist`, lockfiles, binaries, files over 200 KB, secret-shaped basenames (`.env*`, `*.pem`, `*.key`, `*secret*`, `*credential*`, `id_rsa*`), and paths under `.ssh/` / `secret(s)/` / `credential(s)/`. Not a content scanner.
+- Only the newest 3 indexed commits per repo are kept. Dirty (uncommitted) worktrees are invisible and do not flip `status` to `STALE`.
+- Warm query latency targets are measured on small fixtures; `search()` is an in-memory scan plus per-repo `git rev-parse` (no FTS5).
 
 ## Library
 

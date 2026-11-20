@@ -26,6 +26,15 @@ describe("commit-aware invalidation", () => {
     expect(engine.repoSummary(repo.id).cacheHit).toBe(true);
   });
 
+  it("reindexRepo(force=false) reports fresh without inflating counters", () => {
+    const dir = makeRepo(root, "r", { "a.ts": "export function a() {}\n" });
+    const { repo } = engine.registerRepo(dir);
+    const before = engine.stats();
+    const result = engine.reindexRepo(repo.id, false);
+    expect(result.reason).toBe("fresh");
+    expect(engine.stats().reindexes).toBe(before.reindexes);
+  });
+
   it("reindexes when HEAD sha differs from the cached sha", () => {
     const dir = makeRepo(root, "r", { "a.ts": "export function oldName() {}\n" });
     const { repo, indexed } = engine.registerRepo(dir);

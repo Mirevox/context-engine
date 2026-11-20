@@ -35,10 +35,11 @@ Evidence from a Grok acceptance run on 2026-11-20, Node v22.23.4, branch `cursor
 ## Known gaps
 
 - Dirty worktree is invisible. An uncommitted `dirtyOnlyMarker` in `greet.ts` was not searchable, and `status` still said `fresh`, because the cache is keyed on `HEAD` only.
-- The secret denylist is the file basename. `.env` and `credentials.json` are skipped and `fileContext(".env")` refuses, but `secrets/notes.txt` was indexed and `CANARY_SECRET_VALUE` showed up in search.
+- Secret filtering covers basenames plus `.ssh`/`secret(s)`/`credential(s)` path segments; it still does not scan contents, and names like `.npmrc` / `kubeconfig` outside those dirs can be indexed.
 - No embeddings, no per-repo ACL, no multi-tenant auth beyond the optional HTTP bearer.
 - Repo identity is `SHA-1(realpath)` — separate clones do not share cache rows.
 - MCP stdio is not the Compose service; Compose stands up HTTP only (share `/data` volume for MCP on the host).
+- Multi-process SQLite concurrency is not stress-tested in CI; some write paths omit a combined `BEGIN IMMEDIATE`.
 
 ## Docker standup (validation wave)
 
