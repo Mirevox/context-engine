@@ -24,7 +24,9 @@
     "typecheck": "tsc --noEmit",
     "fixture:init": "node scripts/init-fixture.mjs",
     "start:mcp": "node dist/cli.js serve-mcp",
-    "start:http": "node dist/cli.js serve-http"
+    "start:http": "node dist/cli.js serve-http",
+    "docker:up": "docker compose up --build -d",
+    "docker:down": "docker compose down"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

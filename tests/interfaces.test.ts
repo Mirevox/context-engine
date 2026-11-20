@@ -65,7 +65,12 @@ describe("HTTP", () => {
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const auth = { authorization: "Bearer secret" };
     try {
-      expect((await fetch(`${base}/health`)).status).toBe(200);
+      const healthRes = await fetch(`${base}/health`);
+      expect(healthRes.status).toBe(200);
+      const health = (await healthRes.json()) as { ok: boolean; db: string; repos: number };
+      expect(health.ok).toBe(true);
+      expect(health.db).toBe("ok");
+      expect(health.repos).toBe(0);
       expect((await fetch(`${base}/stats`)).status).toBe(401);
 
       const reg = await fetch(`${base}/repos`, {

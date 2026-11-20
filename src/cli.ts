@@ -146,17 +146,23 @@ program
 program
   .command("serve-http")
   .description("serve the JSON HTTP API")
-  .option("-p, --port <port>", "port", "7437")
-  .option("--host <host>", "bind address", "127.0.0.1")
+  .option("-p, --port <port>", "port (or $CONTEXT_ENGINE_PORT)", process.env.CONTEXT_ENGINE_PORT ?? "7437")
+  .option("--host <host>", "bind address (or $CONTEXT_ENGINE_HOST)", process.env.CONTEXT_ENGINE_HOST ?? "127.0.0.1")
   .action(async (o: { port: string; host: string }) => {
     try {
       assertSafeBind(o.host);
       const e = engine();
       const server = createHttpServer(e);
-      server.listen(Number(o.port), o.host, () => {
-        console.error(`context-engine HTTP listening on http://${o.host}:${o.port} (data: ${e.config.dataDir})`);
+      const port = Number(o.port);
+      if (!Number.isFinite(port) || port <= 0) throw new Error(`Invalid port: ${o.port}`);
+      server.listen(port, o.host, () => {
+        console.error(`context-engine HTTP listening on http://${o.host}:${port} (data: ${e.config.dataDir})`);
       });
-      const stop = () => server.close(() => { e.close(); process.exit(0); });
+      const stop = () =>
+        server.close(() => {
+          e.close();
+          process.exit(0);
+        });
       process.on("SIGINT", stop);
       process.on("SIGTERM", stop);
     } catch (err) {

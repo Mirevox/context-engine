@@ -74,7 +74,24 @@ export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}):
       }
 
       if (method === "GET" && parts[0] === "health" && parts.length === 1) {
-        return send(res, 200, { ok: true, name: "mirevox-context-engine" });
+        try {
+          engine.db.prepare("SELECT 1 AS ok").get();
+          const repos = engine.registry.list().length;
+          return send(res, 200, {
+            ok: true,
+            name: "mirevox-context-engine",
+            db: "ok",
+            repos,
+            dataDir: engine.config.dataDir,
+          });
+        } catch (err) {
+          return send(res, 503, {
+            ok: false,
+            name: "mirevox-context-engine",
+            db: "error",
+            error: ((err as Error).message ?? String(err)).split("\n")[0],
+          });
+        }
       }
       if (parts[0] === "repos") {
         if (parts.length === 1 && method === "GET") return send(res, 200, engine.listRepos());
