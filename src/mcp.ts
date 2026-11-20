@@ -37,19 +37,6 @@ export function createMcpServer(engine: ContextEngine): McpServer {
     "register_repo",
     {
       title: "Register repo",
-      description: "Register a local git repository path into the shared index and index at HEAD.",
-      inputSchema: {
-        path: z.string().min(1).describe("Absolute or relative path to a local git checkout"),
-        name: z.string().optional().describe("Optional display name"),
-      },
-    },
-    async ({ path, name }) => run(() => engine.registerRepo(path, { name })),
-  );
-
-  server.registerTool(
-    "register_repo",
-    {
-      title: "Register repo",
       description: "Register a local git repo (absolute path) and index it at HEAD so all clients share its cache.",
       inputSchema: {
         path: z.string().min(1).describe("Path to a local git checkout"),
