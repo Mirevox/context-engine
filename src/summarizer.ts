@@ -43,10 +43,17 @@ export function languageOf(path: string): string {
 }
 
 const SECRET_NAME = /^(\.env(\..*)?|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx)|.*(secret|credential).*)$/i;
+/** Path segments that mark a file as secret-shaped even if the basename looks ordinary. */
+const SECRET_DIR = /(^|\/)(\.ssh|secrets?|credentials?)(\/|$)/i;
 
-/** Secret-shaped filenames never enter the cache or tool output. */
+/**
+ * Best-effort secret path filter: basename patterns plus common secret directory segments
+ * (`.ssh/`, `secret(s)/`, `credential(s)/`). Does not scan file contents or catch every
+ * sensitive name (e.g. `.npmrc`, `kubeconfig` outside those dirs).
+ */
 export function isSecretPath(path: string): boolean {
-  return SECRET_NAME.test(basename(path));
+  const normalized = path.replace(/\\/g, "/");
+  return SECRET_NAME.test(basename(normalized)) || SECRET_DIR.test(normalized);
 }
 
 export function shouldIndex(path: string): boolean {

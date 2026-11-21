@@ -1,0 +1,52 @@
+# One-command standup for the HTTP API (shared SQLite cache on a volume).
+# Usage:
+#   cp .env.example .env   # set CONTEXT_ENGINE_TOKEN
+#   docker compose up --build -d
+#   curl -s http://127.0.0.1:7437/health
+#
+# Mount local git repos under /repos (read-only) so the engine can register them:
+#   curl -H "Authorization: Bearer $CONTEXT_ENGINE_TOKEN" -H 'content-type: application/json' \
+#     -d '{"path":"/repos/my-app","name":"my-app"}' http://127.0.0.1:7437/repos
+
+services:
+  context-engine:
+    build: .
+    image: mirevox/context-engine:0.1.0
+    container_name: mirevox-context-engine
+    restart: unless-stopped
+    ports:
+      - "${CONTEXT_ENGINE_PUBLISH_PORT:-7437}:7437"
+    environment:
+      MIREVOX_CONTEXT_DIR: /data
+      CONTEXT_ENGINE_HOST: "0.0.0.0"
+      CONTEXT_ENGINE_PORT: "7437"
+      CONTEXT_ENGINE_TOKEN: ${CONTEXT_ENGINE_TOKEN:?Set CONTEXT_ENGINE_TOKEN in .env (see .env.example)}
+      # Optional knobs (read by Node process env for future use / ops clarity)
+      NODE_ENV: production
+    volumes:
+      - context-data:/data
+      # Host directory of git clones; override with REPOS_HOST_PATH in .env
+      - ${REPOS_HOST_PATH:-./fixtures}:/repos:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:7437/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 8s
+    # Fail closed: no unauthenticated non-loopback bind (assertSafeBind + token required above)
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  context-data:
