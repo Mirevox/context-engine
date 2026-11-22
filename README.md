@@ -135,3 +135,7 @@ Binds `127.0.0.1` by default. Set `CONTEXT_ENGINE_TOKEN` to require `Authorizati
 ## License
 
 Licensed under the [Apache License, Version 2.0](./LICENSE). See `LICENSE` for the full text.
+
+## Verification
+
+Test suite, smoke test, and container verification results are recorded in [`VERIFICATION.md`](./VERIFICATION.md).
