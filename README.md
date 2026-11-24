@@ -136,6 +136,13 @@ Binds `127.0.0.1` by default. Set `CONTEXT_ENGINE_TOKEN` to require `Authorizati
 
 Licensed under the [Apache License, Version 2.0](./LICENSE). See `LICENSE` for the full text.
 
+## What's New in v0.2.0
+
+- **Canonical Team Repo Identity (`repoId`):** Derives shared repo keys from normalized Git `remote.origin.url` (`host/owner/repo`) with local-path fallback so separate developer clones reuse the same SQLite summary cache.
+- **Offline Background Indexer (`src/worker.ts`):** `BackgroundIndexer` keeps commits pre-indexed offline (`POST /worker/tick`, `GET /worker/status`, `--worker-interval <ms>`).
+- **Cross-Source `appcode_documents` & Budgeted Context Packs:** Ingests Confluence, SharePoint, Jira, Testing, and Stage-Gate artifacts (`POST /appcodes/:appcode/ingest`, `GET /appcodes/:appcode/documents?include_content=1`) and serves 1-call budget-fitted bundles (`GET /appcodes/:appcode/context-pack`) + 4 new MCP tools (`ingest_appcode_documents`, `get_appcode_context_pack`, `list_appcode_documents`, `run_background_index`).
+- **Token Savings Ledger:** Tracks `rawBytesAvoided`, `summaryBytesServed`, `tokensSaved`, and `contextPacksServed` in `cache.sqlite` `counters`.
+
 ## Verification
 
 Test suite, smoke test, and container verification results are recorded in [`VERIFICATION.md`](./VERIFICATION.md).
