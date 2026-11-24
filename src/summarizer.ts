@@ -248,6 +248,73 @@ export function summarizeFile(path: string, text: string): FileSummary {
   };
 }
 
+export interface DocumentSummary {
+  summary: string;
+  symbols: string[];
+  keywords: string;
+}
+
+const DOC_ID_TOKEN = /\b([A-Z]{2,10}-\d+)\b/g;
+
+/**
+ * Deterministic extractive summary for non-Git artifacts (Confluence, SharePoint, Jira, test reports).
+ * Omits generic code language/line-count prefixes and caps summary length at SUMMARY_MAX_CHARS.
+ */
+export function summarizeDocument(title: string, rawText: string, source: string): DocumentSummary {
+  const trimmed = rawText.trim();
+  const cleanTitle = clean(title);
+  const symbolSet = new Set<string>();
+  const addSymbol = (s: string) => {
+    const v = s.trim();
+    if (v && symbolSet.size < 40) symbolSet.add(v);
+  };
+
+  for (const h of extractSymbols("markdown", rawText, 20)) addSymbol(h);
+  for (const m of `${title}\n${rawText}`.matchAll(DOC_ID_TOKEN)) {
+    if (m[1]) addSymbol(m[1]);
+  }
+
+  let body = "";
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const j = jsonSummary(trimmed, cleanTitle || source);
+      body = j.summary;
+      for (const k of j.symbols) addSymbol(k);
+    } catch {
+      /* fall through to text summarization */
+    }
+  }
+
+  if (!body && trimmed) {
+    const withoutFrontmatter = rawText.replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/, "");
+    const lines = withoutFrontmatter
+      .split(/\r?\n/)
+      .map((line) =>
+        line
+          .replace(/^#{1,6}\s+/, "")
+          .replace(/^\s*[-*+]\s+\[[ xX]?\]\s*/, "")
+          .replace(/^\s*[-*+]\s+/, "")
+          .replace(/^```.*$/, "")
+          .trim(),
+      )
+      .filter((line) => line.length > 0 && !/^[-=_*`]{3,}$/.test(line));
+    body = clean(lines.join(" "));
+  }
+
+  let composed = "";
+  if (cleanTitle && body) {
+    composed = body.toLowerCase().startsWith(cleanTitle.toLowerCase()) ? body : `${cleanTitle}: ${body}`;
+  } else {
+    composed = body || cleanTitle || source;
+  }
+
+  return {
+    summary: truncate(composed, SUMMARY_MAX_CHARS),
+    symbols: [...symbolSet],
+    keywords: topKeywords(`${cleanTitle}\n${rawText}`).join(" "),
+  };
+}
+
 export interface RepoSummaryInput {
   name: string;
   files: { path: string; language: string; byteSize: number; summary: string }[];

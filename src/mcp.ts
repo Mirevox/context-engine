@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { ContextEngine } from "./engine.js";
+import { BackgroundIndexer } from "./worker.js";
 
 function json(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -11,16 +12,16 @@ function fail(err: unknown) {
   return { isError: true, content: [{ type: "text" as const, text: (err as Error).message ?? String(err) }] };
 }
 
-function run<T>(fn: () => T) {
+async function run<T>(fn: () => T | Promise<T>) {
   try {
-    return json(fn());
+    return json(await fn());
   } catch (err) {
     return fail(err);
   }
 }
 
-export function createMcpServer(engine: ContextEngine): McpServer {
-  const server = new McpServer({ name: "mirevox-context-engine", version: "0.1.0" });
+export function createMcpServer(engine: ContextEngine, worker = new BackgroundIndexer(engine)): McpServer {
+  const server = new McpServer({ name: "mirevox-context-engine", version: "0.2.0" });
   const repoArg = z.string().describe("Repo id, registered name, or absolute path");
 
   server.registerTool(
@@ -94,7 +95,8 @@ export function createMcpServer(engine: ContextEngine): McpServer {
     "cache_stats",
     {
       title: "Cache stats",
-      description: "Persisted cache hit/miss counters, invalidations, reindexes, and cache size, plus this session's counters.",
+      description:
+        "Persisted cache hit/miss counters, invalidations, reindexes, token savings, and cache size, plus this session's counters.",
       inputSchema: {},
     },
     async () => run(() => engine.stats()),
@@ -113,10 +115,92 @@ export function createMcpServer(engine: ContextEngine): McpServer {
     async ({ repo, force }) => run(() => engine.reindexRepo(repo, force ?? true)),
   );
 
+  server.registerTool(
+    "ingest_appcode_documents",
+    {
+      title: "Ingest appcode documents",
+      description:
+        "Summarize, SHA-256 deduplicate, and store cross-source documents (Confluence, SharePoint, Jira, Git, tests) under an appcode.",
+      inputSchema: {
+        appcode: z.string().min(1).describe("Application code identifier"),
+        docs: z
+          .array(
+            z.object({
+              source: z.string().min(1).describe("Source kind (e.g. confluence, sharepoint, jira, git, testing)"),
+              docId: z.string().min(1).describe("Document identifier within source"),
+              title: z.string().min(1).describe("Document title"),
+              content: z.string().describe("Raw document content"),
+              uri: z.string().optional().describe("Optional document URI or path"),
+              stage: z.string().optional().describe("Optional lifecycle stage"),
+              metadata: z.record(z.string(), z.unknown()).optional().describe("Optional structured metadata"),
+              priority: z.number().int().optional().describe("Optional priority weight"),
+              updatedAt: z.string().optional().describe("Optional ISO timestamp"),
+            }),
+          )
+          .describe("Documents to ingest"),
+      },
+    },
+    async ({ appcode, docs }) => run(() => engine.ingestAppcodeDocuments(appcode, docs)),
+  );
+
+  server.registerTool(
+    "get_appcode_context_pack",
+    {
+      title: "Get appcode context pack",
+      description:
+        "Pack the highest-scoring summarized documents for an appcode strictly inside budget_tokens and record token savings.",
+      inputSchema: {
+        appcode: z.string().min(1).describe("Application code identifier"),
+        budget_tokens: z.number().int().min(1).max(200000).optional().describe("Token budget (default 1500)"),
+        stage: z.string().optional().describe("Filter by lifecycle stage"),
+        sources: z.array(z.string()).optional().describe("Filter by source kinds"),
+        query: z.string().optional().describe("Optional focus query for ranking/filtering"),
+      },
+    },
+    async ({ appcode, budget_tokens, stage, sources, query }) =>
+      run(() =>
+        engine.getAppcodeContextPack(appcode, {
+          budgetTokens: budget_tokens,
+          stage,
+          sources,
+          query,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    "list_appcode_documents",
+    {
+      title: "List appcode documents",
+      description: "List cached document summaries for an appcode with optional stage, source, and limit filters.",
+      inputSchema: {
+        appcode: z.string().min(1).describe("Application code identifier"),
+        stage: z.string().optional().describe("Filter by lifecycle stage"),
+        source: z.string().optional().describe("Filter by source kind"),
+        limit: z.number().int().min(1).max(500).optional().describe("Max documents (default 100)"),
+      },
+    },
+    async ({ appcode, stage, source, limit }) =>
+      run(() => engine.listAppcodeDocuments(appcode, { stage, source, limit })),
+  );
+
+  server.registerTool(
+    "run_background_index",
+    {
+      title: "Run background index",
+      description: "Trigger one background indexer tick across registered repos (or one target repo).",
+      inputSchema: {
+        repo: z.string().optional().describe("Optional repo id, name, path, or remote URL"),
+        force: z.boolean().optional().describe("Force full recompute (default false)"),
+      },
+    },
+    async ({ repo, force }) => run(() => worker.tick({ repo, force })),
+  );
+
   return server;
 }
 
-export async function serveMcpStdio(engine: ContextEngine): Promise<void> {
-  const server = createMcpServer(engine);
+export async function serveMcpStdio(engine: ContextEngine, worker?: BackgroundIndexer): Promise<void> {
+  const server = createMcpServer(engine, worker);
   await server.connect(new StdioServerTransport());
 }

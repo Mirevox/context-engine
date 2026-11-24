@@ -1,8 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { ContextEngine } from "./engine.js";
+import type { AppcodeDocInput } from "./types.js";
+import { BackgroundIndexer } from "./worker.js";
 
 export interface HttpOptions {
   token?: string;
+  worker?: BackgroundIndexer;
 }
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -55,6 +58,32 @@ function need(v: string | null | undefined, name: string): string {
   return v;
 }
 
+function parseAppcodeDoc(raw: unknown): AppcodeDocInput {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new HttpError(400, "Invalid document entry");
+  }
+  const d = raw as Record<string, unknown>;
+  const source = typeof d.source === "string" ? d.source : "";
+  const docId = typeof d.docId === "string" ? d.docId : typeof d.doc_id === "string" ? d.doc_id : "";
+  const title = typeof d.title === "string" ? d.title : "";
+  const content = typeof d.content === "string" ? d.content : "";
+  const metadata =
+    d.metadata && typeof d.metadata === "object" && !Array.isArray(d.metadata)
+      ? (d.metadata as Record<string, unknown>)
+      : undefined;
+  return {
+    source,
+    docId,
+    title,
+    content,
+    uri: typeof d.uri === "string" ? d.uri : typeof d.path === "string" ? d.path : undefined,
+    stage: typeof d.stage === "string" ? d.stage : undefined,
+    metadata,
+    priority: typeof d.priority === "number" ? d.priority : undefined,
+    updatedAt: typeof d.updatedAt === "string" ? d.updatedAt : typeof d.updated_at === "string" ? d.updated_at : undefined,
+  };
+}
+
 /**
  * JSON API:
  *   GET    /health
@@ -64,9 +93,15 @@ function need(v: string | null | undefined, name: string): string {
  *   GET    /search?q=&repo=&limit=
  *   GET    /file?repo=&path=&content=1&max_chars=
  *   GET    /stats
+ *   POST   /appcodes/:appcode/ingest   {docs}
+ *   GET    /appcodes/:appcode/context-pack?budget_tokens=&stage=&sources=&query=
+ *   GET    /appcodes/:appcode/documents?stage=&source=&limit=
+ *   POST   /worker/tick                {repo?, force?}
+ *   GET    /worker/status
  */
 export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}): Server {
   const token = opts.token ?? process.env.CONTEXT_ENGINE_TOKEN;
+  const worker = opts.worker ?? new BackgroundIndexer(engine);
   return createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
@@ -90,6 +125,7 @@ export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}):
           return send(res, 200, {
             ok: true,
             name: "mirevox-context-engine",
+            version: "0.2.0",
             db: "ok",
             repos,
             dataDir: engine.config.dataDir,
@@ -98,6 +134,7 @@ export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}):
           return send(res, 503, {
             ok: false,
             name: "mirevox-context-engine",
+            version: "0.2.0",
             db: "error",
             error: ((err as Error).message ?? String(err)).split("\n")[0],
           });
@@ -118,6 +155,74 @@ export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}):
         if (parts.length === 3 && parts[2] === "reindex" && method === "POST") {
           const body = await readJson(req);
           return send(res, 200, engine.reindexRepo(parts[1]!, body.force !== false));
+        }
+      }
+      if (parts[0] === "appcodes" && parts.length === 3) {
+        const appcode = need(parts[1], "appcode");
+        if (parts[2] === "ingest" && method === "POST") {
+          const body = await readJson(req);
+          const rawDocs = Array.isArray(body.docs)
+            ? body.docs
+            : Array.isArray(body.documents)
+              ? body.documents
+              : null;
+          if (!rawDocs) throw new HttpError(400, "Missing required parameter: docs");
+          const docs = rawDocs.map(parseAppcodeDoc);
+          return send(res, 200, engine.ingestAppcodeDocuments(appcode, docs));
+        }
+        if (parts[2] === "context-pack" && method === "GET") {
+          const rawBudget = q.get("budget_tokens");
+          let budgetTokens: number | undefined;
+          if (rawBudget) {
+            budgetTokens = Number(rawBudget);
+            if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) {
+              throw new HttpError(400, `Invalid budget_tokens: ${rawBudget}`);
+            }
+          }
+          const sourcesParam = q
+            .getAll("sources")
+            .flatMap((s) => s.split(","))
+            .map((s) => s.trim())
+            .filter(Boolean);
+          return send(
+            res,
+            200,
+            engine.getAppcodeContextPack(appcode, {
+              budgetTokens,
+              stage: q.get("stage") || undefined,
+              sources: sourcesParam.length > 0 ? sourcesParam : undefined,
+              query: q.get("query") || undefined,
+            }),
+          );
+        }
+        if (parts[2] === "documents" && method === "GET") {
+          const rawLimit = q.get("limit");
+          let limit: number | undefined;
+          if (rawLimit) {
+            limit = Number(rawLimit);
+            if (!Number.isFinite(limit)) throw new HttpError(400, `Invalid limit: ${rawLimit}`);
+          }
+          return send(
+            res,
+            200,
+            engine.listAppcodeDocuments(appcode, {
+              stage: q.get("stage") || undefined,
+              source: q.get("source") || undefined,
+              limit,
+              includeContent: q.get("include_content") === "1" || q.get("include_content") === "true",
+            }),
+          );
+        }
+      }
+      if (parts[0] === "worker" && parts.length === 2) {
+        if (parts[1] === "tick" && method === "POST") {
+          const body = await readJson(req);
+          const repo = typeof body.repo === "string" && body.repo ? body.repo : undefined;
+          const force = body.force === true;
+          return send(res, 200, await worker.tick({ repo, force }));
+        }
+        if (parts[1] === "status" && method === "GET") {
+          return send(res, 200, worker.status());
         }
       }
       if (method === "GET" && parts[0] === "search" && parts.length === 1) {
@@ -152,7 +257,7 @@ export function createHttpServer(engine: ContextEngine, opts: HttpOptions = {}):
       const msg = ((err as Error).message ?? String(err)).split("\n")[0] ?? "Internal error";
       const status = /^Unknown repo|not found/i.test(msg)
         ? 404
-        : /Refusing to read secret/i.test(msg)
+        : /Refusing to (read|ingest) secret/i.test(msg)
           ? 403
           : /Ambiguous repo/i.test(msg)
             ? 409

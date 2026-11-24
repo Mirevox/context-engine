@@ -4,6 +4,7 @@ export interface RegisteredRepo {
   id: RepoId;
   name: string;
   path: string;
+  remoteUrl?: string | null;
   registeredAt: string;
   lastIndexedCommit: string | null;
   lastIndexedAt: string | null;
@@ -29,6 +30,10 @@ export interface CacheCounters {
   repoMisses: number;
   invalidations: number;
   reindexes: number;
+  rawBytesAvoided: number;
+  summaryBytesServed: number;
+  tokensSaved: number;
+  contextPacksServed: number;
 }
 
 export interface CacheStats extends CacheCounters {
@@ -85,4 +90,114 @@ export interface IndexResult {
   filesSkipped: number;
   durationMs: number;
   reason: "initial" | "head-changed" | "forced" | "fresh";
+}
+
+export interface AppcodeDocInput {
+  source: string;
+  docId: string;
+  title: string;
+  content: string;
+  uri?: string;
+  stage?: string;
+  metadata?: Record<string, unknown>;
+  priority?: number;
+  updatedAt?: string;
+}
+
+export interface AppcodeDocument {
+  appcode: string;
+  source: string;
+  docId: string;
+  title: string;
+  uri: string;
+  stage: string;
+  contentHash: string;
+  rawBytes: number;
+  summary: string;
+  summaryBytes: number;
+  content?: string;
+  symbols: string[];
+  keywords: string;
+  metadata: Record<string, unknown>;
+  priority: number;
+  updatedAt: string;
+}
+
+export interface AppcodeIngestResult {
+  appcode: string;
+  ingested: number;
+  deduplicated: number;
+  documents: AppcodeDocument[];
+}
+
+export interface AppcodeContextPackItem {
+  source: string;
+  docId: string;
+  title: string;
+  uri: string;
+  stage: string;
+  summary: string;
+  symbols: string[];
+  rawBytes: number;
+  summaryBytes: number;
+  tokens: number;
+  priority: number;
+  score: number;
+  updatedAt: string;
+}
+
+export interface AppcodeContextPack {
+  appcode: string;
+  stage: string | null;
+  sources: string[];
+  query: string | null;
+  budgetTokens: number;
+  usedTokens: number;
+  totalCandidates: number;
+  omittedCount: number;
+  rawBytesTotal: number;
+  summaryBytesServed: number;
+  rawBytesAvoided: number;
+  tokensSaved: number;
+  items: AppcodeContextPackItem[];
+}
+
+export interface WorkerTickOptions {
+  repo?: string;
+  force?: boolean;
+}
+
+export interface WorkerRepoResult {
+  repoId: RepoId;
+  repoName: string;
+  status: "indexed" | "fresh" | "error";
+  commitSha?: string;
+  reason?: IndexResult["reason"];
+  filesIndexed?: number;
+  filesReused?: number;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface WorkerTickResult {
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  skippedOverlap: boolean;
+  processed: number;
+  indexed: number;
+  fresh: number;
+  errors: number;
+  results: WorkerRepoResult[];
+}
+
+export interface WorkerStatus {
+  enabled: boolean;
+  running: boolean;
+  intervalMs: number | null;
+  tickCount: number;
+  lastTickAt: string | null;
+  lastDurationMs: number | null;
+  lastError: string | null;
+  lastResult: WorkerTickResult | null;
 }

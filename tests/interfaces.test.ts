@@ -36,7 +36,19 @@ describe("MCP", () => {
 
     const tools = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(tools).toEqual(
-      ["cache_stats", "get_file_context", "get_repo_summary", "list_repos", "register_repo", "reindex_repo", "search_context"].sort(),
+      [
+        "cache_stats",
+        "get_appcode_context_pack",
+        "get_file_context",
+        "get_repo_summary",
+        "ingest_appcode_documents",
+        "list_appcode_documents",
+        "list_repos",
+        "register_repo",
+        "reindex_repo",
+        "run_background_index",
+        "search_context",
+      ].sort(),
     );
     expect(parse(await client.callTool({ name: "list_repos", arguments: {} }))[0].name).toBe("sample");
     const summary = parse(await client.callTool({ name: "get_repo_summary", arguments: { repo: "sample" } }));

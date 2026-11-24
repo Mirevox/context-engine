@@ -1,11 +1,17 @@
-import { Cache } from "./cache.js";
+import { createHash } from "node:crypto";
+import { Cache, SUMMARIZER_VERSION } from "./cache.js";
 import { loadConfig, type ConfigOverrides, type EngineConfig } from "./config.js";
-import { openDb, type Db } from "./db.js";
+import { inTransaction, openDb, type Db } from "./db.js";
 import { headSha, readFileAt } from "./git.js";
 import { Indexer } from "./indexer.js";
 import { Registry } from "./registry.js";
-import { isSecretPath, looksBinary, summarizeFile, tokenize } from "./summarizer.js";
+import { isSecretPath, looksBinary, summarizeDocument, summarizeFile, tokenize } from "./summarizer.js";
 import type {
+  AppcodeContextPack,
+  AppcodeContextPackItem,
+  AppcodeDocInput,
+  AppcodeDocument,
+  AppcodeIngestResult,
   CacheStats,
   FileContext,
   IndexResult,
@@ -25,6 +31,49 @@ export interface FreshResult {
   commitSha: string;
   /** Present when the repo had to be (re)indexed to serve this request. */
   indexed?: IndexResult;
+}
+
+interface AppcodeDocRow {
+  appcode: string;
+  source: string;
+  doc_id: string;
+  title: string;
+  uri: string;
+  stage: string;
+  content_hash: string;
+  raw_bytes: number;
+  summary: string;
+  summary_bytes: number;
+  content?: string;
+  symbols: string;
+  keywords: string;
+  metadata: string;
+  priority: number;
+  updated_at: string;
+}
+
+function toAppcodeDoc(r: AppcodeDocRow, includeContent = false): AppcodeDocument {
+  const doc: AppcodeDocument = {
+    appcode: r.appcode,
+    source: r.source,
+    docId: r.doc_id,
+    title: r.title,
+    uri: r.uri,
+    stage: r.stage,
+    contentHash: r.content_hash,
+    rawBytes: r.raw_bytes,
+    summary: r.summary,
+    summaryBytes: r.summary_bytes,
+    symbols: JSON.parse(r.symbols) as string[],
+    keywords: r.keywords,
+    metadata: JSON.parse(r.metadata) as Record<string, unknown>,
+    priority: r.priority,
+    updatedAt: r.updated_at,
+  };
+  if (includeContent) {
+    doc.content = r.content ?? r.summary;
+  }
+  return doc;
 }
 
 /** Facade shared by the CLI, MCP server and HTTP server. */
@@ -113,6 +162,9 @@ export class ContextEngine {
   repoSummary(ref: string): RepoSummary {
     const fresh = this.ensureFresh(ref);
     const s = this.cache.getRepoSummary(fresh.repo.id, fresh.commitSha)!;
+    const rawBytes = this.cache.sumFileBytes(fresh.repo.id, fresh.commitSha);
+    const summaryBytes = Buffer.byteLength(s.overview, "utf8");
+    this.cache.recordSavings(rawBytes, summaryBytes);
     return {
       repo: fresh.repo,
       commitSha: fresh.commitSha,
@@ -222,8 +274,316 @@ export class ContextEngine {
       const text = content?.toString("utf8") ?? "";
       out.content = text.slice(0, max);
       out.truncated = text.length > max;
+    } else {
+      const summaryBytes = Buffer.byteLength(rec.summary, "utf8");
+      this.cache.recordSavings(rec.byteSize, summaryBytes);
     }
     return out;
+  }
+
+  /**
+   * Summarize, deduplicate by SHA-256 content hash, and persist non-Git/cross-source
+   * artifacts keyed by (appcode, source, doc_id). Rejects secret-shaped docIds or URIs.
+   */
+  ingestAppcodeDocuments(appcode: string, docs: AppcodeDocInput[]): AppcodeIngestResult {
+    const cleanAppcode = appcode.trim();
+    if (!cleanAppcode) throw new Error("Missing required parameter: appcode");
+    if (!Array.isArray(docs)) throw new Error("Invalid docs: expected an array");
+
+    for (const d of docs) {
+      if (!d || typeof d !== "object") throw new Error("Invalid document entry");
+      if (!d.source || typeof d.source !== "string") throw new Error("Missing required parameter: source");
+      if (!d.docId || typeof d.docId !== "string") throw new Error("Missing required parameter: docId");
+      if (!d.title || typeof d.title !== "string") throw new Error("Missing required parameter: title");
+      if (typeof d.content !== "string") throw new Error("Missing required parameter: content");
+      const normalizedDocId = d.docId.replace(/^\.?\//, "");
+      if (isSecretPath(normalizedDocId)) {
+        throw new Error(`Refusing to ingest secret-shaped path: ${d.docId}`);
+      }
+      if (d.uri) {
+        const normalizedUri = d.uri.replace(/^\.?\//, "");
+        if (isSecretPath(normalizedUri)) {
+          throw new Error(`Refusing to ingest secret-shaped path: ${d.uri}`);
+        }
+      }
+    }
+
+    let ingested = 0;
+    let deduplicated = 0;
+    const documents: AppcodeDocument[] = [];
+
+    inTransaction(this.db, () => {
+      const findExactStmt = this.db.prepare(
+        "SELECT * FROM appcode_documents WHERE appcode = ? AND source = ? AND doc_id = ?",
+      );
+      const findHashStmt = this.db.prepare(
+        "SELECT * FROM appcode_documents WHERE appcode = ? AND content_hash = ? AND summarizer_version = ? LIMIT 1",
+      );
+      const upsertStmt = this.db.prepare(
+        `INSERT INTO appcode_documents
+         (appcode, source, doc_id, title, uri, stage, content_hash, raw_bytes, summary, summary_bytes, content, symbols, keywords, metadata, priority, updated_at, summarizer_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(appcode, source, doc_id) DO UPDATE SET
+           title = excluded.title,
+           uri = excluded.uri,
+           stage = excluded.stage,
+           content_hash = excluded.content_hash,
+           raw_bytes = excluded.raw_bytes,
+           summary = excluded.summary,
+           summary_bytes = excluded.summary_bytes,
+           content = excluded.content,
+           symbols = excluded.symbols,
+           keywords = excluded.keywords,
+           metadata = excluded.metadata,
+           priority = excluded.priority,
+           updated_at = excluded.updated_at,
+           summarizer_version = excluded.summarizer_version`,
+      );
+
+      for (const d of docs) {
+        const source = d.source.trim();
+        const docId = d.docId.trim();
+        const title = d.title.trim();
+        const uri = (d.uri ?? "").trim();
+        const stage = (d.stage ?? "").trim();
+        const priority = typeof d.priority === "number" && Number.isFinite(d.priority) ? Math.trunc(d.priority) : 0;
+        const updatedAt = d.updatedAt?.trim() || new Date().toISOString();
+        const metaJson = JSON.stringify(d.metadata ?? {});
+        const contentHash = createHash("sha256").update(d.content).digest("hex");
+        const rawBytes = Buffer.byteLength(d.content, "utf8");
+
+        const existingExact = findExactStmt.get(cleanAppcode, source, docId) as AppcodeDocRow | undefined;
+        if (existingExact && existingExact.content_hash === contentHash) {
+          if (
+            existingExact.title !== title ||
+            existingExact.uri !== uri ||
+            existingExact.stage !== stage ||
+            existingExact.metadata !== metaJson ||
+            existingExact.priority !== priority
+          ) {
+            upsertStmt.run(
+              cleanAppcode,
+              source,
+              docId,
+              title,
+              uri,
+              stage,
+              contentHash,
+              rawBytes,
+              existingExact.summary,
+              existingExact.summary_bytes,
+              existingExact.content ?? d.content.slice(0, 65_536),
+              existingExact.symbols,
+              existingExact.keywords,
+              metaJson,
+              priority,
+              updatedAt,
+              SUMMARIZER_VERSION,
+            );
+            documents.push(toAppcodeDoc(findExactStmt.get(cleanAppcode, source, docId) as unknown as AppcodeDocRow));
+          } else {
+            documents.push(toAppcodeDoc(existingExact));
+          }
+          deduplicated++;
+          continue;
+        }
+
+        const existingByHash = findHashStmt.get(cleanAppcode, contentHash, SUMMARIZER_VERSION) as
+          | AppcodeDocRow
+          | undefined;
+        if (existingByHash && !existingExact) {
+          deduplicated++;
+          documents.push(toAppcodeDoc(existingByHash));
+          continue;
+        }
+
+        const sum = existingByHash
+          ? {
+              summary: existingByHash.summary,
+              symbols: JSON.parse(existingByHash.symbols) as string[],
+              keywords: existingByHash.keywords,
+            }
+          : summarizeDocument(title, d.content, source);
+        const summaryBytes = Buffer.byteLength(sum.summary, "utf8");
+
+        upsertStmt.run(
+          cleanAppcode,
+          source,
+          docId,
+          title,
+          uri,
+          stage,
+          contentHash,
+          rawBytes,
+          sum.summary,
+          summaryBytes,
+          d.content.slice(0, 65_536),
+          JSON.stringify(sum.symbols),
+          sum.keywords,
+          metaJson,
+          priority,
+          updatedAt,
+          SUMMARIZER_VERSION,
+        );
+        ingested++;
+        documents.push(toAppcodeDoc(findExactStmt.get(cleanAppcode, source, docId) as unknown as AppcodeDocRow));
+      }
+    });
+
+    return {
+      appcode: cleanAppcode,
+      ingested,
+      deduplicated,
+      documents,
+    };
+  }
+
+  listAppcodeDocuments(
+    appcode: string,
+    opts: { stage?: string; source?: string; limit?: number; includeContent?: boolean } = {},
+  ): AppcodeDocument[] {
+    const cleanAppcode = appcode.trim();
+    if (!cleanAppcode) throw new Error("Missing required parameter: appcode");
+    if (opts.limit !== undefined && !Number.isFinite(opts.limit)) {
+      throw new Error(`Invalid limit: ${String(opts.limit)}`);
+    }
+    const limit = Math.max(1, Math.min(Math.trunc(opts.limit ?? 100), 500));
+
+    const clauses = ["appcode = ?", "summarizer_version = ?"];
+    const params: (string | number)[] = [cleanAppcode, SUMMARIZER_VERSION];
+    if (opts.stage) {
+      clauses.push("stage = ?");
+      params.push(opts.stage);
+    }
+    if (opts.source) {
+      clauses.push("source = ?");
+      params.push(opts.source);
+    }
+    params.push(limit);
+
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM appcode_documents WHERE ${clauses.join(" AND ")}
+         ORDER BY priority DESC, updated_at DESC, source ASC, doc_id ASC LIMIT ?`,
+      )
+      .all(...params) as unknown as AppcodeDocRow[];
+    return rows.map((r) => toAppcodeDoc(r, opts.includeContent === true));
+  }
+
+  getAppcodeContextPack(
+    appcode: string,
+    opts: { budgetTokens?: number; stage?: string; sources?: string[]; query?: string } = {},
+  ): AppcodeContextPack {
+    const cleanAppcode = appcode.trim();
+    if (!cleanAppcode) throw new Error("Missing required parameter: appcode");
+    if (opts.budgetTokens !== undefined && (!Number.isFinite(opts.budgetTokens) || opts.budgetTokens <= 0)) {
+      throw new Error(`Invalid budget_tokens: ${String(opts.budgetTokens)}`);
+    }
+    const budgetTokens = Math.max(1, Math.trunc(opts.budgetTokens ?? 1500));
+
+    const clauses = ["appcode = ?", "summarizer_version = ?"];
+    const params: (string | number)[] = [cleanAppcode, SUMMARIZER_VERSION];
+    if (opts.stage) {
+      clauses.push("stage = ?");
+      params.push(opts.stage);
+    }
+    const sources = (opts.sources ?? []).map((s) => s.trim()).filter(Boolean);
+    if (sources.length > 0) {
+      clauses.push(`source IN (${sources.map(() => "?").join(", ")})`);
+      params.push(...sources);
+    }
+
+    const rows = this.db
+      .prepare(`SELECT * FROM appcode_documents WHERE ${clauses.join(" AND ")}`)
+      .all(...params) as unknown as AppcodeDocRow[];
+    const docs = rows.map((r) => toAppcodeDoc(r));
+
+    const query = opts.query?.trim() || null;
+    const terms = query ? tokenize(query) : [];
+    const phrase = query ? query.toLowerCase() : "";
+
+    const scored: { doc: AppcodeDocument; score: number }[] = [];
+    for (const doc of docs) {
+      let score = doc.priority;
+      if (terms.length > 0) {
+        const titleL = doc.title.toLowerCase();
+        const docIdL = doc.docId.toLowerCase();
+        const uriL = doc.uri.toLowerCase();
+        const symL = doc.symbols.join(" ").toLowerCase();
+        const sumL = doc.summary.toLowerCase();
+        const kw = new Set(doc.keywords.split(" "));
+        let qScore = 0;
+        for (const t of terms) {
+          if (titleL.includes(t) || symL.includes(t)) qScore += 4;
+          if (docIdL.includes(t) || uriL.includes(t)) qScore += 3;
+          if (sumL.includes(t)) qScore += 1.5;
+          if (kw.has(t)) qScore += 1;
+        }
+        if (phrase.length > 3 && (titleL.includes(phrase) || sumL.includes(phrase))) qScore += 3;
+        if (qScore <= 0) continue;
+        score = Number((qScore * 10 + doc.priority).toFixed(2));
+      }
+      scored.push({ doc, score });
+    }
+
+    scored.sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.doc.priority - a.doc.priority ||
+        b.doc.updatedAt.localeCompare(a.doc.updatedAt) ||
+        a.doc.source.localeCompare(b.doc.source) ||
+        a.doc.docId.localeCompare(b.doc.docId),
+    );
+
+    const items: AppcodeContextPackItem[] = [];
+    let usedTokens = 0;
+    let omittedCount = 0;
+    let rawBytesTotal = 0;
+    let summaryBytesServed = 0;
+
+    for (const { doc, score } of scored) {
+      const tokens = Math.max(1, Math.ceil(doc.summaryBytes / 4));
+      if (usedTokens + tokens > budgetTokens) {
+        omittedCount++;
+        continue;
+      }
+      usedTokens += tokens;
+      rawBytesTotal += doc.rawBytes;
+      summaryBytesServed += doc.summaryBytes;
+      items.push({
+        source: doc.source,
+        docId: doc.docId,
+        title: doc.title,
+        uri: doc.uri,
+        stage: doc.stage,
+        summary: doc.summary,
+        symbols: doc.symbols.slice(0, 10),
+        rawBytes: doc.rawBytes,
+        summaryBytes: doc.summaryBytes,
+        tokens,
+        priority: doc.priority,
+        score,
+        updatedAt: doc.updatedAt,
+      });
+    }
+
+    const savings = this.cache.recordSavings(rawBytesTotal, summaryBytesServed, { contextPacksServed: 1 });
+
+    return {
+      appcode: cleanAppcode,
+      stage: opts.stage ?? null,
+      sources,
+      query,
+      budgetTokens,
+      usedTokens,
+      totalCandidates: scored.length,
+      omittedCount,
+      rawBytesTotal,
+      summaryBytesServed: savings.summaryBytesServed,
+      rawBytesAvoided: savings.rawBytesAvoided,
+      tokensSaved: savings.tokensSaved,
+      items,
+    };
   }
 
   stats(): CacheStats {

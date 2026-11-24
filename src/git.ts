@@ -17,6 +17,15 @@ export function headSha(repoPath: string): string {
   return git(repoPath, ["rev-parse", "--verify", "HEAD"]).trim();
 }
 
+export function originRemoteUrl(repoPath: string): string | null {
+  try {
+    const out = git(repoPath, ["remote", "get-url", "origin"]).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
 export interface TreeEntry {
   path: string;
   blobSha: string;

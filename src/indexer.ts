@@ -116,20 +116,22 @@ export class Indexer {
       readme: readmeText,
       packageDescription,
     });
-    this.cache.putRepoSummary({
-      repoId: repo.id,
-      commitSha: sha,
-      overview: overview.overview,
-      languages: overview.languages,
-      topPaths: overview.topPaths,
-      fileCount: files.length,
-    });
-    this.registry.markIndexed(repo.id, sha, files.length);
-    this.cache.prune(repo.id, this.config.keepCommits);
+    inTransaction(this.db, () => {
+      this.cache.putRepoSummary({
+        repoId: repo.id,
+        commitSha: sha,
+        overview: overview.overview,
+        languages: overview.languages,
+        topPaths: overview.topPaths,
+        fileCount: files.length,
+      });
+      this.registry.markIndexed(repo.id, sha, files.length);
+      this.cache.prune(repo.id, this.config.keepCommits);
 
-    this.cache.bump("fileHits", reused);
-    this.cache.bump("fileMisses", indexed);
-    this.cache.bump("reindexes");
+      this.cache.bump("fileHits", reused);
+      this.cache.bump("fileMisses", indexed);
+      this.cache.bump("reindexes");
+    });
 
     return {
       repoId: repo.id,

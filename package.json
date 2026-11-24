@@ -1,6 +1,6 @@
 {
   "name": "@mirevox/context-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared multi-repo context engine: commit-aware extractive summaries cached in SQLite, served over MCP, CLI and HTTP.",
   "type": "module",
   "license": "Apache-2.0",

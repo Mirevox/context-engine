@@ -12,6 +12,10 @@ const COUNTER_KEYS: CounterKey[] = [
   "repoMisses",
   "invalidations",
   "reindexes",
+  "rawBytesAvoided",
+  "summaryBytesServed",
+  "tokensSaved",
+  "contextPacksServed",
 ];
 
 export interface CachedFile extends FileRecord {
@@ -58,8 +62,8 @@ function toFile(r: FileRow): CachedFile {
 }
 
 /**
- * Summary cache keyed by (repoId, commitSha, path). Hit/miss counters are
- * persisted in SQLite (shared by every client) and mirrored per-process.
+ * Summary cache keyed by (repoId, commitSha, path). Hit/miss and token-savings
+ * counters are persisted in SQLite (shared by every client) and mirrored per-process.
  */
 export class Cache {
   readonly session: CacheCounters = emptyCounters();
@@ -77,6 +81,29 @@ export class Cache {
         "INSERT INTO counters (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = value + excluded.value",
       )
       .run(key, n);
+  }
+
+  /** Persist raw-vs-summary byte avoidance and estimated token savings atomically. */
+  recordSavings(
+    rawBytesTotal: number,
+    summaryBytesServed: number,
+    opts: { contextPacksServed?: number } = {},
+  ): { rawBytesAvoided: number; summaryBytesServed: number; tokensSaved: number } {
+    const avoided = Math.max(0, rawBytesTotal - summaryBytesServed);
+    const savedTokens = Math.floor(avoided / 4);
+    inTransaction(this.db, () => {
+      this.bump("summaryBytesServed", summaryBytesServed);
+      this.bump("rawBytesAvoided", avoided);
+      this.bump("tokensSaved", savedTokens);
+      if (opts.contextPacksServed) {
+        this.bump("contextPacksServed", opts.contextPacksServed);
+      }
+    });
+    return {
+      rawBytesAvoided: avoided,
+      summaryBytesServed,
+      tokensSaved: savedTokens,
+    };
   }
 
   /** Counted lookup: exact (repo, commit, path) key. */
@@ -132,6 +159,15 @@ export class Cache {
       .prepare("SELECT * FROM files WHERE repo_id = ? AND commit_sha = ? AND summarizer_version = ? ORDER BY path")
       .all(repoId, commitSha, SUMMARIZER_VERSION) as unknown as FileRow[];
     return rows.map(toFile);
+  }
+
+  sumFileBytes(repoId: RepoId, commitSha: string): number {
+    const r = this.db
+      .prepare(
+        "SELECT COALESCE(SUM(byte_size), 0) AS total FROM files WHERE repo_id = ? AND commit_sha = ? AND summarizer_version = ?",
+      )
+      .get(repoId, commitSha, SUMMARIZER_VERSION) as { total: number };
+    return r.total;
   }
 
   countFiles(repoId: RepoId, commitSha: string): number {
@@ -236,5 +272,16 @@ export class Cache {
 }
 
 export function emptyCounters(): CacheCounters {
-  return { fileHits: 0, fileMisses: 0, repoHits: 0, repoMisses: 0, invalidations: 0, reindexes: 0 };
+  return {
+    fileHits: 0,
+    fileMisses: 0,
+    repoHits: 0,
+    repoMisses: 0,
+    invalidations: 0,
+    reindexes: 0,
+    rawBytesAvoided: 0,
+    summaryBytesServed: 0,
+    tokensSaved: 0,
+    contextPacksServed: 0,
+  };
 }

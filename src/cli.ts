@@ -3,12 +3,13 @@ import { Command } from "commander";
 import { ContextEngine } from "./engine.js";
 import { assertSafeBind, createHttpServer } from "./http.js";
 import { serveMcpStdio } from "./mcp.js";
+import { BackgroundIndexer } from "./worker.js";
 
 const program = new Command();
 program
   .name("context-engine")
   .description("Shared multi-repo context engine: commit-aware extractive summaries cached in SQLite.")
-  .version("0.1.0")
+  .version("0.2.0")
   .option("-d, --data-dir <dir>", "data directory (default: $MIREVOX_CONTEXT_DIR, ~/.mirevox/context-engine, ./.mirevox-context)")
   .option("--json", "print JSON output");
 
@@ -102,11 +103,11 @@ program
         const lines = [`data: ${e.config.dataDir}`, `repos: ${repos.length}`];
         for (const r of repos) {
           lines.push(
-            `  ${r.name} [${r.id}] ${r.path}\n    indexed=${short(r.lastIndexedCommit)} head=${short(r.headCommit)} files=${r.fileCount} ${r.stale ? "STALE" : "fresh"}${r.error ? ` (${r.error})` : ""}`,
+            `  ${r.name} [${r.id}] ${r.path}${r.remoteUrl ? ` (${r.remoteUrl})` : ""}\n    indexed=${short(r.lastIndexedCommit)} head=${short(r.headCommit)} files=${r.fileCount} ${r.stale ? "STALE" : "fresh"}${r.error ? ` (${r.error})` : ""}`,
           );
         }
         lines.push(
-          `cache: ${stats.files} files, hits=${stats.hits} misses=${stats.misses} hitRate=${(stats.hitRate * 100).toFixed(1)}% invalidations=${stats.invalidations} reindexes=${stats.reindexes}`,
+          `cache: ${stats.files} files, hits=${stats.hits} misses=${stats.misses} hitRate=${(stats.hitRate * 100).toFixed(1)}% invalidations=${stats.invalidations} reindexes=${stats.reindexes} tokensSaved=${stats.tokensSaved}`,
         );
         return lines.join("\n");
       });
@@ -148,29 +149,49 @@ program
   .description("serve the JSON HTTP API")
   .option("-p, --port <port>", "port (or $CONTEXT_ENGINE_PORT)", process.env.CONTEXT_ENGINE_PORT ?? "7437")
   .option("--host <host>", "bind address (or $CONTEXT_ENGINE_HOST)", process.env.CONTEXT_ENGINE_HOST ?? "127.0.0.1")
-  .action(async (o: { port: string; host: string }) => {
+  .option(
+    "--worker-interval <ms>",
+    "background reindex interval in ms (or $CONTEXT_ENGINE_WORKER_INTERVAL_MS)",
+    process.env.CONTEXT_ENGINE_WORKER_INTERVAL_MS,
+  )
+  .action(async (o: { port: string; host: string; workerInterval?: string }) => {
+    let e: ContextEngine | undefined;
+    let worker: BackgroundIndexer | undefined;
     try {
       assertSafeBind(o.host);
-      const e = engine();
-      const server = createHttpServer(e);
+      e = engine();
+      worker = new BackgroundIndexer(e);
+      if (o.workerInterval !== undefined && o.workerInterval !== "") {
+        const intervalMs = Number(o.workerInterval);
+        if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+          throw new Error(`Invalid worker interval: ${o.workerInterval}`);
+        }
+        worker.start(intervalMs);
+      }
+      const server = createHttpServer(e, { worker });
       const port = Number(o.port);
       if (!Number.isFinite(port) || port <= 0) throw new Error(`Invalid port: ${o.port}`);
       server.on("error", (err) => {
         console.error(`error: ${(err as Error).message}`);
-        e.close();
+        worker?.stop();
+        e?.close();
         process.exit(1);
       });
       server.listen(port, o.host, () => {
-        console.error(`context-engine HTTP listening on http://${o.host}:${port} (data: ${e.config.dataDir})`);
+        console.error(`context-engine HTTP listening on http://${o.host}:${port} (data: ${e!.config.dataDir})`);
       });
-      const stop = () =>
+      const stop = () => {
+        worker?.stop();
         server.close(() => {
-          e.close();
+          e?.close();
           process.exit(0);
         });
+      };
       process.on("SIGINT", stop);
       process.on("SIGTERM", stop);
     } catch (err) {
+      worker?.stop();
+      e?.close();
       console.error(`error: ${(err as Error).message}`);
       process.exit(1);
     }
